@@ -1,83 +1,127 @@
-import os
 import copy
-import torch
-import numpy as np
+import os
+from pathlib import Path
+
 import matplotlib.pyplot as plt
-
-from torchvision import datasets, transforms, models
-from torch.utils.data import DataLoader
+import torch
+from sklearn.metrics import ConfusionMatrixDisplay, classification_report, confusion_matrix
 from torch import nn, optim
-from sklearn.metrics import classification_report, confusion_matrix
-
+from torch.utils.data import DataLoader
+from torchvision import datasets, models, transforms
 
 # =========================
-# CONFIG
+
+# Configuration
+
 # =========================
 
-BASE_PATH = "/content/drive/MyDrive/dataset"  # Change this path if needed
+BASE_PATH = os.getenv("DATASET_PATH", "/content/drive/MyDrive/dataset")
+RESULTS_DIR = Path("results")
+
 BATCH_SIZE = 16
 NUM_EPOCHS = 10
-LEARNING_RATE = 0.0001
-IMG_SIZE = 224
+LEARNING_RATE = 1e-4
+IMAGE_SIZE = 224
+RANDOM_SEED = 42
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-
-# =========================
-# DATA TRANSFORMS
 # =========================
 
-train_transform = transforms.Compose([
-    transforms.Resize((IMG_SIZE, IMG_SIZE)),
-    transforms.RandomHorizontalFlip(),
-    transforms.RandomRotation(10),
-    transforms.ToTensor(),
-    transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
-])
-
-eval_transform = transforms.Compose([
-    transforms.Resize((IMG_SIZE, IMG_SIZE)),
-    transforms.ToTensor(),
-    transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
-])
-
+# Utility functions
 
 # =========================
-# LOAD DATA
-# =========================
 
-train_data = datasets.ImageFolder(os.path.join(BASE_PATH, "train"), transform=train_transform)
-val_data = datasets.ImageFolder(os.path.join(BASE_PATH, "val"), transform=eval_transform)
-test_data = datasets.ImageFolder(os.path.join(BASE_PATH, "test"), transform=eval_transform)
+def set_seed(seed: int) -> None:
+"""Set random seed for reproducible experiments."""
+torch.manual_seed(seed)
+torch.cuda.manual_seed_all(seed)
 
-train_loader = DataLoader(train_data, batch_size=BATCH_SIZE, shuffle=True)
-val_loader = DataLoader(val_data, batch_size=BATCH_SIZE, shuffle=False)
-test_loader = DataLoader(test_data, batch_size=BATCH_SIZE, shuffle=False)
+def create_data_loaders(base_path: str):
+"""Create train, validation and test data loaders."""
 
-class_names = train_data.classes
+```
+train_transform = transforms.Compose(
+    [
+        transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomRotation(10),
+        transforms.ToTensor(),
+        transforms.Normalize(
+            mean=[0.5, 0.5, 0.5],
+            std=[0.5, 0.5, 0.5],
+        ),
+    ]
+)
 
-print("Classes:", class_names)
-print("Train images:", len(train_data))
-print("Validation images:", len(val_data))
-print("Test images:", len(test_data))
+eval_transform = transforms.Compose(
+    [
+        transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+        transforms.ToTensor(),
+        transforms.Normalize(
+            mean=[0.5, 0.5, 0.5],
+            std=[0.5, 0.5, 0.5],
+        ),
+    ]
+)
 
+train_data = datasets.ImageFolder(
+    root=os.path.join(base_path, "train"),
+    transform=train_transform,
+)
 
-# =========================
-# MODEL
-# =========================
+val_data = datasets.ImageFolder(
+    root=os.path.join(base_path, "val"),
+    transform=eval_transform,
+)
 
+test_data = datasets.ImageFolder(
+    root=os.path.join(base_path, "test"),
+    transform=eval_transform,
+)
+
+train_loader = DataLoader(
+    train_data,
+    batch_size=BATCH_SIZE,
+    shuffle=True,
+    num_workers=2,
+)
+
+val_loader = DataLoader(
+    val_data,
+    batch_size=BATCH_SIZE,
+    shuffle=False,
+    num_workers=2,
+)
+
+test_loader = DataLoader(
+    test_data,
+    batch_size=BATCH_SIZE,
+    shuffle=False,
+    num_workers=2,
+)
+
+return train_data, val_data, test_data, train_loader, val_loader, test_loader
+```
+
+def create_model(num_classes: int):
+"""Create a pretrained ResNet18 model for image classification."""
+
+```
 model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
-num_features = model.fc.in_features
-model.fc = nn.Linear(num_features, 2)
-model = model.to(DEVICE)
 
+num_features = model.fc.in_features
+model.fc = nn.Linear(num_features, num_classes)
+
+return model.to(DEVICE)
+```
+
+def train_model(model, train_loader, val_loader, train_size, val_size):
+"""Train the model and keep the best validation checkpoint."""
+
+```
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
-
-
-# =========================
-# TRAINING
-# =========================
 
 best_model_weights = copy.deepcopy(model.state_dict())
 best_val_accuracy = 0.0
@@ -105,12 +149,11 @@ for epoch in range(NUM_EPOCHS):
 
         running_loss += loss.item() * images.size(0)
 
-    epoch_loss = running_loss / len(train_data)
+    epoch_loss = running_loss / train_size
     train_losses.append(epoch_loss)
 
     model.eval()
-    correct = 0
-    total = 0
+    correct_predictions = 0
 
     with torch.no_grad():
         for images, labels in val_loader:
@@ -120,10 +163,9 @@ for epoch in range(NUM_EPOCHS):
             outputs = model(images)
             _, predictions = torch.max(outputs, 1)
 
-            total += labels.size(0)
-            correct += (predictions == labels).sum().item()
+            correct_predictions += (predictions == labels).sum().item()
 
-    val_accuracy = correct / total
+    val_accuracy = correct_predictions / val_size
     val_accuracies.append(val_accuracy)
 
     print(f"Training loss: {epoch_loss:.4f}")
@@ -133,24 +175,17 @@ for epoch in range(NUM_EPOCHS):
         best_val_accuracy = val_accuracy
         best_model_weights = copy.deepcopy(model.state_dict())
 
-
-# =========================
-# SAVE BEST MODEL
-# =========================
-
 model.load_state_dict(best_model_weights)
 
-os.makedirs("results", exist_ok=True)
-torch.save(model.state_dict(), "results/best_model.pth")
+return model, best_val_accuracy, train_losses, val_accuracies
+```
 
-print("\nBest validation accuracy:", best_val_accuracy)
+def evaluate_model(model, test_loader, class_names):
+"""Evaluate the trained model on the test set."""
 
-
-# =========================
-# TEST EVALUATION
-# =========================
-
+```
 model.eval()
+
 all_labels = []
 all_predictions = []
 
@@ -165,28 +200,41 @@ with torch.no_grad():
         all_labels.extend(labels.cpu().numpy())
         all_predictions.extend(predictions.cpu().numpy())
 
-report = classification_report(all_labels, all_predictions, target_names=class_names)
+report = classification_report(
+    all_labels,
+    all_predictions,
+    target_names=class_names,
+)
+
 matrix = confusion_matrix(all_labels, all_predictions)
 
-print("\nClassification report:")
-print(report)
+return report, matrix
+```
 
-print("\nConfusion matrix:")
-print(matrix)
+def save_results(
+model,
+best_val_accuracy,
+train_losses,
+val_accuracies,
+report,
+matrix,
+class_names,
+):
+"""Save model weights, metrics and plots."""
 
-with open("results/metrics.txt", "w") as f:
-    f.write("Osteoporosis Detection Results\n")
-    f.write("==============================\n\n")
-    f.write(f"Best validation accuracy: {best_val_accuracy:.4f}\n\n")
-    f.write("Classification report:\n")
-    f.write(report)
-    f.write("\nConfusion matrix:\n")
-    f.write(str(matrix))
+```
+RESULTS_DIR.mkdir(exist_ok=True)
 
+torch.save(model.state_dict(), RESULTS_DIR / "best_model.pth")
 
-# =========================
-# PLOT TRAINING CURVES
-# =========================
+with open(RESULTS_DIR / "metrics.txt", "w", encoding="utf-8") as file:
+    file.write("Osteoporosis Detection Results\n")
+    file.write("==============================\n\n")
+    file.write(f"Best validation accuracy: {best_val_accuracy:.4f}\n\n")
+    file.write("Classification report:\n")
+    file.write(report)
+    file.write("\nConfusion matrix:\n")
+    file.write(str(matrix))
 
 plt.figure()
 plt.plot(train_losses, label="Training loss")
@@ -194,7 +242,7 @@ plt.xlabel("Epoch")
 plt.ylabel("Loss")
 plt.title("Training Loss")
 plt.legend()
-plt.savefig("results/training_loss.png")
+plt.savefig(RESULTS_DIR / "training_loss.png", bbox_inches="tight")
 plt.close()
 
 plt.figure()
@@ -203,5 +251,82 @@ plt.xlabel("Epoch")
 plt.ylabel("Accuracy")
 plt.title("Validation Accuracy")
 plt.legend()
-plt.savefig("results/validation_accuracy.png")
+plt.savefig(RESULTS_DIR / "validation_accuracy.png", bbox_inches="tight")
 plt.close()
+
+display = ConfusionMatrixDisplay(
+    confusion_matrix=matrix,
+    display_labels=class_names,
+)
+
+display.plot(values_format="d")
+plt.title("Confusion Matrix")
+plt.savefig(RESULTS_DIR / "confusion_matrix.png", bbox_inches="tight")
+plt.close()
+```
+
+def main():
+set_seed(RANDOM_SEED)
+
+```
+print(f"Using device: {DEVICE}")
+print(f"Dataset path: {BASE_PATH}")
+
+(
+    train_data,
+    val_data,
+    test_data,
+    train_loader,
+    val_loader,
+    test_loader,
+) = create_data_loaders(BASE_PATH)
+
+class_names = train_data.classes
+num_classes = len(class_names)
+
+print(f"Classes: {class_names}")
+print(f"Train images: {len(train_data)}")
+print(f"Validation images: {len(val_data)}")
+print(f"Test images: {len(test_data)}")
+
+model = create_model(num_classes=num_classes)
+
+model, best_val_accuracy, train_losses, val_accuracies = train_model(
+    model=model,
+    train_loader=train_loader,
+    val_loader=val_loader,
+    train_size=len(train_data),
+    val_size=len(val_data),
+)
+
+report, matrix = evaluate_model(
+    model=model,
+    test_loader=test_loader,
+    class_names=class_names,
+)
+
+print("\nBest validation accuracy:")
+print(f"{best_val_accuracy:.4f}")
+
+print("\nClassification report:")
+print(report)
+
+print("\nConfusion matrix:")
+print(matrix)
+
+save_results(
+    model=model,
+    best_val_accuracy=best_val_accuracy,
+    train_losses=train_losses,
+    val_accuracies=val_accuracies,
+    report=report,
+    matrix=matrix,
+    class_names=class_names,
+)
+
+print("\nResults saved in the 'results' folder.")
+```
+
+if **name** == "**main**":
+main()
+
