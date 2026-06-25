@@ -1,9 +1,1 @@
-Osteoporosis Detection Results
 
-This file will contain model evaluation results after training.
-
-Metrics to include:
-- Validation accuracy
-- Test accuracy
-- Classification report
-- Confusion matrix
